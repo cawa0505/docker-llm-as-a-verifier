@@ -18,7 +18,8 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 import llm_verifier.fine_grained_reward as fgr
-from llm_verifier import compare, select
+from llm_verifier import compare, select, track
+from llm_verifier.fine_grained_reward import score_pair_criterion
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.5-9b")
@@ -170,6 +171,56 @@ class HealthResponse(BaseModel):
     backend: str | None = None
 
 
+class TrackRequest(BaseModel):
+    problem: str
+    steps: list[str] = Field(min_length=1)
+    checkpoint_steps: list[int] | None = None
+    n_evaluations: int = 1
+    model: str | None = None
+
+
+class TrackResponse(BaseModel):
+    steps: list[int]
+    scores: list[float]
+    per_rep_scores: list[list[float | None]]
+    model: str
+
+
+class ScorePairsRequest(BaseModel):
+    """Score multiple (A, B) comparisons in one batch.
+
+    Each pair is scored independently and averaged over `n_reps` reps.
+    Odd reps swap the prompt slots to cancel slot bias.
+    """
+    pairs: list[dict] = Field(
+        description="List of dicts, each with 'problem', 'trace_a', 'trace_b'",
+    )
+    criteria: list[dict] = Field(
+        default=[
+            {
+                "id": "correctness",
+                "name": "Correctness",
+                "description": "Does the output correctly solve the task?",
+            }
+        ]
+    )
+    ground_truth_note: str = (
+        "The correct answer is a function that returns the integer 42."
+    )
+    n_reps: int = 2
+    model: str | None = None
+
+
+class ScorePairsItem(BaseModel):
+    score_a: float
+    score_b: float
+
+
+class ScorePairsResponse(BaseModel):
+    scores: list[ScorePairsItem]
+    model: str
+
+
 # ── FastAPI app ────────────────────────────────────────────────────
 
 app = FastAPI(title="LLM-as-a-Verifier", version="0.1.0")
@@ -242,6 +293,86 @@ async def v1_select(req: SelectRequest):
         n_comparisons=result.n_comparisons,
         model=model,
     )
+
+
+@app.post("/v1/track", response_model=TrackResponse)
+async def v1_track(req: TrackRequest):
+    model = req.model or MODEL_ALIAS
+    try:
+        result = await asyncio.to_thread(
+            track,
+            problem=req.problem,
+            steps=req.steps,
+            checkpoint_steps=req.checkpoint_steps,
+            n_evaluations=req.n_evaluations,
+            max_workers=1,
+            model=model,
+            client=_VERIFIER_CLIENT,
+        )
+    except Exception as exc:
+        log.error("track failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    log.info(
+        "track: steps=%s scores=%s model=%s",
+        result.steps, result.scores, model,
+    )
+    return TrackResponse(
+        steps=result.steps,
+        scores=result.scores,
+        per_rep_scores=result.per_rep_scores,
+        model=model,
+    )
+
+
+@app.post("/v1/score-pairs", response_model=ScorePairsResponse)
+async def v1_score_pairs(req: ScorePairsRequest):
+    """Score multiple (A, B) comparisons in one batch.
+
+    Each pair is scored independently via `score_pair_criterion` and
+    averaged over `n_reps` reps. Odd reps swap the prompt slots to
+    cancel slot bias.
+    """
+    model = req.model or MODEL_ALIAS
+    scores: list[ScorePairsItem] = []
+
+    for idx, pair in enumerate(req.pairs):
+        problem = pair["problem"]
+        trace_a = pair["trace_a"]
+        trace_b = pair["trace_b"]
+        rep_scores_a, rep_scores_b = [], []
+
+        for rep in range(req.n_reps):
+            swap = rep % 2 == 1
+            ta, tb = (trace_b, trace_a) if swap else (trace_a, trace_b)
+            try:
+                sa, sb = await asyncio.to_thread(
+                    score_pair_criterion,
+                    client=_VERIFIER_CLIENT,
+                    problem=problem,
+                    trace_a=ta,
+                    trace_b=tb,
+                    criterion=req.criteria[0],
+                    ground_truth_note=req.ground_truth_note,
+                    model=model,
+                )
+            except Exception as exc:
+                log.error("score_pairs[%d] rep %d failed: %s", idx, rep, exc)
+                sa, sb = 0.5, 0.5  # tie on error
+
+            if swap:
+                sa, sb = sb, sa
+            rep_scores_a.append(sa)
+            rep_scores_b.append(sb)
+
+        avg_a = sum(rep_scores_a) / len(rep_scores_a) if rep_scores_a else 0.5
+        avg_b = sum(rep_scores_b) / len(rep_scores_b) if rep_scores_b else 0.5
+        scores.append(ScorePairsItem(score_a=avg_a, score_b=avg_b))
+
+    log.info(
+        "score_pairs: %d pairs scored model=%s", len(scores), model,
+    )
+    return ScorePairsResponse(scores=scores, model=model)
 
 
 # ── Entrypoint ─────────────────────────────────────────────────────
