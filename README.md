@@ -70,7 +70,7 @@ for commands that use them.
 All configuration is done through environment variables (set in `.env` or passed with `-e`):
 
 | Variable | Required | Default | Description |
-|---|---|---|---|---|
+|---|---|---|---|
 | `OPENAI_BASE_URL` | **Yes** | — | URL of an OpenAI-compatible backend (e.g. `http://host:port/v1`) |
 | `MODEL_ALIAS` | No | `qwen3.5-9b` | Model name the backend serves |
 | `OPENAI_API_KEY` | No | `EMPTY` | API key; most local servers accept any value |
