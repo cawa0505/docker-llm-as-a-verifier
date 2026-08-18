@@ -1,0 +1,17 @@
+# Secrets — never commit real keys
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Verifier score caches and result tables — created on demand at runtime
+cache/
+results/
+
+# Run logs
+logs/
