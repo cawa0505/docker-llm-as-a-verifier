@@ -126,6 +126,38 @@ logging.basicConfig(
 )
 log = logging.getLogger("verifier")
 
+# ── Helpers ─────────────────────────────────────────────────────────
+
+def _validate_images(images: list[str] | None, path: str = "images"
+                     ) -> list[str | bytes] | None:
+    """Validate and convert image references.
+
+    Accepts data URIs (decoded to ``bytes``) and HTTP(S) URLs (kept as
+    ``str``).  Rejects file paths — the server never reads local files.
+
+    Returns the converted list suitable for upstream ``load_image``.
+    """
+    if not images:
+        return None
+    out: list[str | bytes] = []
+    for i, img in enumerate(images):
+        if img.startswith("data:image/") and ";base64," in img:
+            import base64
+            b64 = img.split(";base64,", 1)[1]
+            out.append(base64.b64decode(b64))
+        elif img.startswith(("http://", "https://")):
+            out.append(img)
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{path}[{i}]: only data URI (data:image/*;base64,...) "
+                    f"and HTTP(S) URLs are allowed, got: {img[:60]!r}"
+                ),
+            )
+    return out
+
+
 # ── Request/Response schemas ───────────────────────────────────────
 
 class CompareRequest(BaseModel):
@@ -143,6 +175,7 @@ class CompareRequest(BaseModel):
     )
     model: str | None = None
     n_evaluations: int = 1
+    images: list[str] | None = None
 
 
 class CompareResponse(BaseModel):
@@ -167,6 +200,7 @@ class SelectRequest(BaseModel):
     model: str | None = None
     n_evaluations: int = 1
     pivots: int = 2
+    images: list[str] | None = None
 
 
 class SelectResponse(BaseModel):
@@ -188,6 +222,7 @@ class TrackRequest(BaseModel):
     checkpoint_steps: list[int] | None = None
     n_evaluations: int = 1
     model: str | None = None
+    images: list[str] | None = None
 
 
 class TrackResponse(BaseModel):
@@ -204,7 +239,8 @@ class ScorePairsRequest(BaseModel):
     Odd reps swap the prompt slots to cancel slot bias.
     """
     pairs: list[dict] = Field(
-        description="List of dicts, each with 'problem', 'trace_a', 'trace_b'",
+        description="List of dicts, each with 'problem', 'trace_a', 'trace_b', "
+                    "and optionally 'images'",
     )
     criteria: list[dict] = Field(
         default=[
@@ -247,6 +283,7 @@ class DirectedPair(BaseModel):
     task_id: str
     a: str
     b: str
+    images: list[str] | None = None
 
 
 class DirectedRequest(BaseModel):
@@ -312,6 +349,7 @@ async def health():
 @app.post("/v1/compare", response_model=CompareResponse)
 async def v1_compare(req: CompareRequest):
     model = req.model or MODEL_ALIAS
+    images = _validate_images(req.images, "images")
     try:
         score_a, score_b = await asyncio.to_thread(
             compare,
@@ -323,6 +361,7 @@ async def v1_compare(req: CompareRequest):
             max_workers=1,
             model=model,
             client=_VERIFIER_CLIENT,
+            images=images,
         )
     except Exception as exc:
         log.error("compare failed: %s", exc)
@@ -341,6 +380,7 @@ async def v1_compare(req: CompareRequest):
 @app.post("/v1/select", response_model=SelectResponse)
 async def v1_select(req: SelectRequest):
     model = req.model or MODEL_ALIAS
+    images = _validate_images(req.images, "images")
     try:
         result = await asyncio.to_thread(
             select,
@@ -352,6 +392,7 @@ async def v1_select(req: SelectRequest):
             max_workers=1,
             model=model,
             client=_VERIFIER_CLIENT,
+            images=images,
         )
     except Exception as exc:
         log.error("select failed: %s", exc)
@@ -372,6 +413,7 @@ async def v1_select(req: SelectRequest):
 @app.post("/v1/track", response_model=TrackResponse)
 async def v1_track(req: TrackRequest):
     model = req.model or MODEL_ALIAS
+    images = _validate_images(req.images, "images")
     result = None
     for attempt in range(1, 4):
         try:
@@ -384,6 +426,7 @@ async def v1_track(req: TrackRequest):
                 max_workers=1,
                 model=model,
                 client=_VERIFIER_CLIENT,
+                images=images,
             )
         except Exception as exc:
             log.error("track failed: %s", exc)
@@ -429,6 +472,7 @@ async def v1_score_pairs(req: ScorePairsRequest):
         problem = pair["problem"]
         trace_a = pair["trace_a"]
         trace_b = pair["trace_b"]
+        pair_images = _validate_images(pair.get("images"), f"pairs[{idx}].images")
         rep_scores_a, rep_scores_b = [], []
 
         for rep in range(req.n_reps):
@@ -444,6 +488,7 @@ async def v1_score_pairs(req: ScorePairsRequest):
                     criterion=req.criteria[0],
                     ground_truth_note=req.ground_truth_note,
                     model=model,
+                    images=pair_images,
                 )
             except Exception as exc:
                 log.error("score_pairs[%d] rep %d failed: %s", idx, rep, exc)
@@ -498,11 +543,17 @@ async def v1_directed(req: DirectedRequest):
     """
     model = req.model or MODEL_ALIAS
 
-    # Build tasks dict: task_name -> {candidate_key -> {trace, problem}}
+    # Build tasks dict: task_name -> {candidate_key -> {trace, problem, images}}
     # and needed_pairs: task_name -> [(candidate_a, candidate_b), ...]
     tasks_dict: dict[str, dict] = {}
     needed_pairs: dict[str, list[tuple[str, str]]] = {}
     task_problems: dict[str, str] = {t["id"]: t["problem"] for t in req.tasks}
+
+    # Validate and convert images from tasks and pairs
+    task_images_conv: dict[str, list[str | bytes] | None] = {
+        t["id"]: _validate_images(t.get("images"), f"tasks[{t['id']}].images")
+        for t in req.tasks
+    }
 
     for p in req.pairs:
         tid = p.task_id
@@ -512,13 +563,17 @@ async def v1_directed(req: DirectedRequest):
         # Assign candidate names per pair using an incrementing key
         key_a = f"a_{len(tasks_dict[tid]) // 2}"
         key_b = f"b_{len(tasks_dict[tid]) // 2}"
+        pair_images = _validate_images(p.images, f"pairs[{tid}].images")
+        img = pair_images or task_images_conv.get(tid)
         tasks_dict[tid][key_a] = {
             "trace": p.a,
             "problem": task_problems.get(tid, ""),
+            "images": img,
         }
         tasks_dict[tid][key_b] = {
             "trace": p.b,
             "problem": task_problems.get(tid, ""),
+            "images": img,
         }
         needed_pairs[tid].append((key_a, key_b))
 

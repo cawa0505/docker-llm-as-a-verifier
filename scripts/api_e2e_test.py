@@ -213,4 +213,50 @@ except urllib.error.HTTPError as exc:
 else:
     _check("directed empty tasks 422", False, "empty tasks was accepted")
 
+# 11. Image input: compare with data URI
+PNG_1x1 = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA"
+           "fFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+status, img_cmp = _post("/v1/compare", {
+    "problem": "What color is this image?",
+    "trace_a": "Red",
+    "trace_b": "Blue",
+    "criteria": CRITERIA,
+    "n_evaluations": 1,
+    "images": [PNG_1x1],
+})
+_check("compare images status", status == 200, str(img_cmp))
+_check("compare images scores in [0,1]",
+       0.0 <= img_cmp["score_a"] <= 1.0 and 0.0 <= img_cmp["score_b"] <= 1.0,
+       str(img_cmp))
+print(f"  compare+images: good={img_cmp['score_a']:.3f} bad={img_cmp['score_b']:.3f} "
+      f"accepted={img_cmp['accepted']}")
+
+# 12. Image input: select with data URI
+status, img_sel = _post("/v1/select", {
+    "problem": "What color is this image?",
+    "candidates": ["Red", "Blue"],
+    "criteria": CRITERIA,
+    "n_evaluations": 1,
+    "pivots": 2,
+    "images": [PNG_1x1],
+})
+_check("select images status", status == 200, str(img_sel))
+_check("select images scores in [0,1]",
+       all(0.0 <= s <= 1.0 for s in img_sel["scores"]), str(img_sel))
+print(f"  select+images: index={img_sel['index']} scores={[round(s, 3) for s in img_sel['scores']]}")
+
+# 13. Image input: validation rejects file paths
+try:
+    _post("/v1/compare", {
+        "problem": "test",
+        "trace_a": "a",
+        "trace_b": "b",
+        "images": ["/etc/passwd"],
+    })
+except urllib.error.HTTPError as exc:
+    _check("compare images reject file path", exc.code == 422,
+           f"got {exc.code}")
+else:
+    _check("compare images reject file path", False, "file path was accepted")
+
 print("\nALL E2E CHECKS PASSED")

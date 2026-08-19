@@ -35,3 +35,15 @@
       format_usage → wrapped)
 - [x] 4.2 Update README API section with `/v1/usage` and `/v1/directed`
       request/response examples
+
+## 5. Image input support
+
+- [x] 5.1 Add `images` field to `CompareRequest`, `SelectRequest`, `TrackRequest`,
+      `ScorePairsRequest` pydantic schemas
+- [x] 5.2 Add `_validate_images()` helper: data URI → decoded bytes, HTTP(S) URL
+      passthrough, file path → 422
+- [x] 5.3 Update all handlers to forward decoded images to upstream functions
+      (directed handler puts images in `tasks_dict` candidate entries)
+- [x] 5.4 Extend E2E tests with image compare, image select, file-path rejection
+- [x] 5.5 Update README with `images` parameter documentation
+- [x] 5.6 Update `docs/API-ROADMAP.md` — remove `[待討論]` from image input entry

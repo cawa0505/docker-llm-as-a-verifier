@@ -102,6 +102,25 @@ scores in [0, 1] and whether `score_b` meets the `VERIFIER_MIN_SCORE` threshold.
 {"score_a": 0.12, "score_b": 0.95, "accepted": true, "model": "qwen3.5-9b"}
 ```
 
+Optionally pass `images` (array of base64 data URIs or HTTP URLs) for
+multimodal evaluation. File paths are rejected with 422.
+
+```json
+{
+  "problem": "Fix the bug in foo()",
+  "trace_a": "initial code...",
+  "trace_b": "patched code...",
+  "criteria": [{"id": "correctness", "name": "Correctness", "description": "..."}],
+  "n_evaluations": 1,
+  "images": ["data:image/png;base64,iVBOR..."]
+}
+→
+{"score_a": 0.12, "score_b": 0.95, "accepted": true, "model": "qwen3.5-9b"}
+```
+
+The `images` field is also accepted on `POST /v1/select`, `POST /v1/track`,
+`POST /v1/score-pairs`, and `POST /v1/directed` (via `tasks` entries).
+
 ### `POST /v1/select`
 
 Select the best candidate from N options using the Probabilistic Pivot Tournament.
@@ -262,7 +281,7 @@ The container installs `llm-verifier` from PyPI and wraps it with:
 - **`app/server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`, `/v1/usage`, `/v1/directed`
 - **`smoke_test.py`** — standalone script that verifies the backend returns logprobs (no `llm-verifier` package dependency)
 - **`verifier_smoke_test.py`** — checks `compare()` and `select()` with assertions
-- **`api_e2e_test.py`** — end-to-end test of every HTTP endpoint against a running service
+- **`api_e2e_test.py`** — end-to-end test of all 38 HTTP test cases against a running service (compare, select, track, score-pairs, usage, directed, images, error handling)
 
 The verifier itself connects to your external OpenAI-compatible backend (llama.cpp, vLLM, etc.) — it is **not** served inside this container.
 
