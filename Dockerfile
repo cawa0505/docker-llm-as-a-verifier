@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir llm-verifier==0.2.0 fastapi uvicorn[standard]
 
 # Entrypoint and scripts
 COPY scripts/ /app/scripts/
+COPY app/ /app/app/
 RUN chmod +x /app/scripts/*.sh
 
 # Verifier score cache and result output directories

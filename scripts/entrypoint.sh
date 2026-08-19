@@ -37,4 +37,4 @@ if [ -z "$OPENAI_BASE_URL" ]; then
     exit 1
 fi
 
-exec python /app/scripts/server.py
+exec python /app/app/server.py

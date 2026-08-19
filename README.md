@@ -192,7 +192,7 @@ VERIFIER_BACKEND_TIMEOUT=300
 The container installs `llm-verifier` from PyPI and wraps it with:
 
 - **`entrypoint.sh`** — starts the HTTP service by default, or runs any command you pass
-- **`server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`
+- **`app/server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`
 - **`smoke_test.py`** — standalone script that verifies the backend returns logprobs (no `llm-verifier` package dependency)
 - **`verifier_smoke_test.py`** — checks `compare()` and `select()` with assertions
 
@@ -205,9 +205,10 @@ The verifier itself connects to your external OpenAI-compatible backend (llama.c
 ├── docker-compose.yml          # HTTP service with port mapping + volumes
 ├── .env.example                # Configuration template (safe to commit)
 ├── .gitignore
+├── app/
+│   └── server.py               # HTTP verifier service (FastAPI)
 └── scripts/
     ├── entrypoint.sh           # Container entrypoint
-    ├── server.py               # HTTP verifier service (FastAPI)
     ├── smoke_test.py           # Backend connectivity + logprobs test
     └── verifier_smoke_test.py  # Core verifier behavior test
 ```
