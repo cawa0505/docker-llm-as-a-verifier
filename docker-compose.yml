@@ -1,5 +1,7 @@
 services:
   verifier:
+    # Build locally (default) OR use published GHCR image:
+    #   image: ghcr.io/cawa0505/docker-llm-as-a-verifier:latest
     build: .
     container_name: llm-verifier
     ports:
