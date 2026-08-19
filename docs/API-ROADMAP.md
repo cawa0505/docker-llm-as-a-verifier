@@ -13,15 +13,21 @@ Upstream `llm-verifier` 提供的功能與 docker-llm-as-a-verifier HTTP API 的
 
 全部端點由 `scripts/api_e2e_test.py` 做端到端驗證（含 422/502 錯誤路徑）。
 
+## 規劃中（見 openspec/changes/expand-http-api-coverage）
+
+| HTTP 端點 | 上游函式 | 說明 |
+|-----------|----------|------|
+| `GET /v1/usage` | `token_usage()` / `format_usage()` | 累積 token 消耗回報（service 啟動至今） |
+| `POST /v1/directed` | `score_directed_pairs()` / `directed_reward()` | 定向 (task, a, b) 比較 + 磁碟 cache + (R_a, R_b) |
+
 ## 待包裝（依優先順序）
 
-### P3 — 細粒度評分控制
-- **`score_pair_criterion(client, problem, trace_a, trace_b, criterion, ground_truth_note, model, images)`**
-- 單一 criterion 的細粒度獎勵，`compare` 的底層建構塊
-- **`directed_reward(scores, task_name, a, b, criteria_ids, n_reps)`**
-- 純運算，從已評分資料計算導向獎勵 (R_a, R_b)
-
 ### P4 — 工具函式
-- `load_prompts(path)` — 從檔案載入評分標準
-- `format_usage(usage)` — 格式化 token 消耗報告
-- `create_client()` — 從環境變數自動建立 OpenAI client
+- `load_prompts(path)` — 從檔案載入評分標準（client 端工具，不適合 HTTP 包裝）
+- `create_client()` — 從環境變數自動建立 OpenAI client（server 已自建，不需暴露）
+
+## 刻意不包裝
+
+- 圖片輸入（`compare/select/track` 的 `images` 參數）：server 端
+  `call_openai` 已支援 `image_url`，但現行 backend (Qwen3.5-9B) 為純文字，
+  無法驗證。等 VLM backend 再議。`[待討論]`
