@@ -39,12 +39,32 @@ client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"),
 )
 
-# Resolve model name from the server's model list when no MODEL_ALIAS match
-model = model_alias
+# Verify the requested alias is actually served. llama.cpp silently serves
+# its loaded model for ANY requested name, so an unknown MODEL_ALIAS would
+# otherwise produce a false PASS.
+served = []
+try:
+    for m in client.models.list():
+        mid = getattr(m, "id", None)
+        if mid:
+            served.append(mid)
+        mname = getattr(m, "name", None)
+        if mname:
+            served.append(mname)
+except Exception as exc:
+    print(f"FAIL: cannot resolve model list from backend: {exc}")
+    sys.exit(1)
+
+if model_alias not in served:
+    print(f"FAIL: MODEL_ALIAS {model_alias!r} is not served by the backend "
+          f"(served: {sorted(set(served)) or 'none'})")
+    sys.exit(1)
+
+print(f"Model alias resolved: {model_alias}")
 
 # Minimal chat call with logprobs to confirm the backend works end-to-end.
 response = client.chat.completions.create(
-    model=model,
+    model=model_alias,
     messages=[{"role": "user", "content": "Say hello."}],
     max_tokens=16,
     temperature=0.0,
