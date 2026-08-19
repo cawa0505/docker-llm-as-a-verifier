@@ -77,6 +77,8 @@ for commands that use them.
 | `/v1/select` | POST | Select best from N candidates → index + scores |
 | `/v1/track` | POST | Score an agent trajectory's progress after each step |
 | `/v1/score-pairs` | POST | Batch score multiple (A, B) comparisons |
+| `/v1/usage` | GET | Accumulated token usage since service start |
+| `/v1/directed` | POST | Score directed (task, a, b) pairs with cache + rewards |
 
 All endpoints return JSON. Error responses:
 
@@ -176,18 +178,70 @@ to cancel slot bias.
 }
 ```
 
+### `GET /v1/usage`
+
+Return accumulated token usage since the service started. No backend
+interaction — always succeeds (even when the backend is down). Health check
+requests are NOT counted.
+
+```json
+→
+{
+  "model": "qwen3.5-9b",
+  "prompt_tokens": 1234,
+  "completion_tokens": 567,
+  "cached_tokens": 0,
+  "backend_requests": 8,
+  "formatted": "Verifier tokens (8 verifier calls)\n  input ..."
+}
+```
+
+### `POST /v1/directed`
+
+Score directed (task, a, b) pairs with disk-cache persistence. Groups pairs by
+task, calls `score_directed_pairs` for cache-aware scoring, then computes
+`directed_reward` (R_a, R_b) per pair. Odd `n_reps` swap a/b slots to cancel
+slot bias. Repeat requests hit the cache without additional backend calls.
+
+```json
+{
+  "tasks": [{"id": "task-1", "problem": "Write a function that returns 42."}],
+  "pairs": [{"task_id": "task-1", "a": "def foo(): return 0", "b": "def foo(): return 42"}],
+  "criteria": [{"id": "correctness", "name": "Correctness", "description": "Does the output correctly solve the task?"}],
+  "ground_truth_note": "The correct answer is a function that returns the integer 42.",
+  "n_reps": 2
+}
+→
+{
+  "results": [
+    {
+      "task_id": "task-1",
+      "a": "def foo(): return 0",
+      "b": "def foo(): return 42",
+      "score_a": 0.04,
+      "score_b": 0.999,
+      "reward_a": 0.04,
+      "reward_b": 0.999
+    }
+  ],
+  "cached": false,
+  "model": "qwen3.5-9b"
+}
+```
+
 ## Configuration
 
 All configuration is done through environment variables (set in `.env` or passed with `-e`):
 
 | Variable | Required | Default | Description |
-|---|---|---|---|---|
+|---|---|---|---|---|---|
 | `OPENAI_BASE_URL` | **Yes** | — | URL of an OpenAI-compatible backend (e.g. `http://host:port/v1`) |
 | `MODEL_ALIAS` | No | `qwen3.5-9b` | Model name the backend serves |
 | `OPENAI_API_KEY` | No | `EMPTY` | API key; most local servers accept any value |
 | `VERIFIER_PORT` | No | `8010` | HTTP service port |
 | `VERIFIER_MIN_SCORE` | No | `0.8` | Minimum score threshold for `accepted` field |
 | `VERIFIER_BACKEND_TIMEOUT` | No | `300` | Backend request timeout in seconds (increase for long prompts)
+| `VERIFIER_CACHE_DIR` | No | `/app/cache` | Directory for directed pair cache (persisted via volume) |
 
 ### Example `.env`
 
@@ -205,7 +259,7 @@ VERIFIER_BACKEND_TIMEOUT=300
 The container installs `llm-verifier` from PyPI and wraps it with:
 
 - **`entrypoint.sh`** — starts the HTTP service by default, or runs any command you pass
-- **`app/server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`
+- **`app/server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`, `/v1/usage`, `/v1/directed`
 - **`smoke_test.py`** — standalone script that verifies the backend returns logprobs (no `llm-verifier` package dependency)
 - **`verifier_smoke_test.py`** — checks `compare()` and `select()` with assertions
 - **`api_e2e_test.py`** — end-to-end test of every HTTP endpoint against a running service
@@ -221,11 +275,14 @@ The verifier itself connects to your external OpenAI-compatible backend (llama.c
 ├── .gitignore
 ├── app/
 │   └── server.py               # HTTP verifier service (FastAPI)
-└── scripts/
-    ├── entrypoint.sh           # Container entrypoint
-    ├── smoke_test.py           # Backend connectivity + logprobs test
-    ├── verifier_smoke_test.py  # Core verifier behavior test
-    └── api_e2e_test.py         # End-to-end HTTP API test
+├── scripts/
+│   ├── entrypoint.sh           # Container entrypoint
+│   ├── smoke_test.py           # Backend connectivity + logprobs test
+│   ├── verifier_smoke_test.py  # Core verifier behavior test
+│   └── api_e2e_test.py         # End-to-end HTTP API test
+├── docs/
+│   └── API-ROADMAP.md          # API coverage roadmap
+└── openspec/                   # OpenSpec change artifacts (private)
 ```
 
 ## License

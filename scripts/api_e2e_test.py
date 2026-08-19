@@ -135,4 +135,62 @@ except urllib.error.HTTPError as exc:
 else:
     _check("validation 422", False, "missing problem was accepted")
 
+# 7. Usage: works without any backend interaction
+status, usage = _get("/v1/usage")
+_check("usage status", status == 200, str(usage))
+_check("usage has model", "model" in usage, str(usage))
+_check("usage counts >= 0",
+       usage["prompt_tokens"] >= 0 and usage["completion_tokens"] >= 0,
+       str(usage))
+_check("usage backend_requests >= 5",
+       usage["backend_requests"] >= 5,  # health is NOT counted, 5 verifier calls
+       f"got {usage['backend_requests']}")
+_check("usage has formatted", len(usage["formatted"]) > 0, str(usage))
+
+# Re-read usage — counts should be identical (no new verifier call)
+status, usage2 = _get("/v1/usage")
+_check("usage idempotent", usage2["backend_requests"] == usage["backend_requests"],
+       f"before={usage['backend_requests']} after={usage2['backend_requests']}")
+
+# 8. Directed comparison
+status, directed = _post("/v1/directed", {
+    "tasks": [{"id": "task-1", "problem": PROBLEM}],
+    "pairs": [{"task_id": "task-1", "a": GOOD, "b": BAD}],
+    "criteria": CRITERIA,
+    "n_reps": 1,
+})
+_check("directed status", status == 200, str(directed))
+_check("directed results count", len(directed["results"]) == 1, str(directed))
+r = directed["results"][0]
+_check("directed reward_a in [0,1]", 0.0 <= r["reward_a"] <= 1.0, str(r))
+_check("directed reward_b in [0,1]", 0.0 <= r["reward_b"] <= 1.0, str(r))
+_check("directed good > bad", r["reward_a"] > r["reward_b"], str(r))
+_check("directed raw scores match",
+       r["score_a"] == r["reward_a"] and r["score_b"] == r["reward_b"],
+       f"score_a={r['score_a']} reward_a={r['reward_a']}")
+print(f"  directed: reward_a={r['reward_a']:.3f} reward_b={r['reward_b']:.3f} "
+      f"score_a={r['score_a']:.3f} score_b={r['score_b']:.3f}")
+
+# 9. Directed: empty pairs → 422
+try:
+    _post("/v1/directed", {
+        "tasks": [{"id": "t", "problem": PROBLEM}],
+        "pairs": [],
+    })
+except urllib.error.HTTPError as exc:
+    _check("directed empty pairs 422", exc.code == 422, f"got {exc.code}")
+else:
+    _check("directed empty pairs 422", False, "empty pairs was accepted")
+
+# 10. Directed: empty tasks → 422
+try:
+    _post("/v1/directed", {
+        "tasks": [],
+        "pairs": [{"task_id": "t", "a": GOOD, "b": BAD}],
+    })
+except urllib.error.HTTPError as exc:
+    _check("directed empty tasks 422", exc.code == 422, f"got {exc.code}")
+else:
+    _check("directed empty tasks 422", False, "empty tasks was accepted")
+
 print("\nALL E2E CHECKS PASSED")

@@ -19,13 +19,18 @@ from pydantic import BaseModel, Field
 
 import llm_verifier.fine_grained_reward as fgr
 from llm_verifier import compare, select, track
-from llm_verifier.fine_grained_reward import score_pair_criterion
+from llm_verifier.fine_grained_reward import (
+    score_pair_criterion,
+    score_directed_pairs,
+    directed_reward,
+)
 
 # ── Config ──────────────────────────────────────────────────────────
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.5-9b")
 VERIFIER_PORT = int(os.environ.get("VERIFIER_PORT", "8010"))
 MIN_SCORE = float(os.environ.get("VERIFIER_MIN_SCORE", "0.8"))
 BACKEND_TIMEOUT = int(os.environ.get("VERIFIER_BACKEND_TIMEOUT", "300"))
+VERIFIER_CACHE_DIR = os.environ.get("VERIFIER_CACHE_DIR", "/app/cache")
 
 # ── Monkey-patch call_openai for llama.cpp compatibility ────────────
 # llama.cpp doesn't support vLLM/SGLang-specific extra_body params:
@@ -107,6 +112,12 @@ def _create_verifier_client():
     return OpenAI(base_url=base_url, api_key=api_key, timeout=BACKEND_TIMEOUT, max_retries=0)
 
 _VERIFIER_CLIENT = _create_verifier_client()
+
+
+class _LazyClient:
+    """Wrapper with .get() for upstream APIs expecting a lazy client."""
+    def get(self):
+        return _VERIFIER_CLIENT
 
 # ── Logging ────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -218,6 +229,69 @@ class ScorePairsItem(BaseModel):
 
 class ScorePairsResponse(BaseModel):
     scores: list[ScorePairsItem]
+    model: str
+
+
+class UsageResponse(BaseModel):
+    """Token usage accumulated since service start."""
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    backend_requests: int
+    formatted: str
+
+
+class DirectedPair(BaseModel):
+    """One directed (a, b) pair to score."""
+    task_id: str
+    a: str
+    b: str
+
+
+class DirectedRequest(BaseModel):
+    """Score directed (task, a, b) pairs.
+
+    tasks: list of {id, problem}
+    pairs: list of {task_id, a, b} referencing task ids
+    criteria: list of {id, name, description}
+    ground_truth_note: optional ground truth
+    n_reps: repeats (odd reps swap a/b slots to cancel slot bias)
+    model: optional model override
+    """
+    tasks: list[dict] = Field(min_length=1)
+    pairs: list[DirectedPair] = Field(min_length=1)
+    criteria: list[dict] = Field(
+        default=[
+            {
+                "id": "correctness",
+                "name": "Correctness",
+                "description": "Does the output correctly solve the task?",
+            }
+        ]
+    )
+    ground_truth_note: str = (
+        "The correct answer is a function that returns the integer 42."
+    )
+    n_reps: int = 2
+    model: str | None = None
+
+
+class DirectedResult(BaseModel):
+    """One directed pair result with scores and rewards."""
+    task_id: str
+    a: str
+    b: str
+    score_a: float
+    score_b: float
+    reward_a: float
+    reward_b: float
+
+
+class DirectedResponse(BaseModel):
+    """Results for all directed pairs."""
+    results: list[DirectedResult]
+    cached: bool
     model: str
 
 
@@ -388,6 +462,121 @@ async def v1_score_pairs(req: ScorePairsRequest):
         "score_pairs: %d pairs scored model=%s", len(scores), model,
     )
     return ScorePairsResponse(scores=scores, model=model)
+
+
+# ── Usage endpoint ────────────────────────────────────────────────
+
+
+@app.get("/v1/usage", response_model=UsageResponse)
+async def v1_usage():
+    """Return accumulated token usage since service start.
+
+    No backend interaction — always succeeds (even when backend is down).
+    Health check requests are NOT counted in usage.
+    """
+    usage = fgr.token_usage()
+    return UsageResponse(
+        model=MODEL_ALIAS,
+        prompt_tokens=usage.get("input_tokens", 0),
+        completion_tokens=usage.get("output_tokens", 0),
+        cached_tokens=usage.get("cached_input_tokens", 0),
+        backend_requests=usage.get("calls", 0),
+        formatted="\n".join(fgr.format_usage(usage)),
+    )
+
+
+# ── Directed comparison endpoint ──────────────────────────────────
+
+
+@app.post("/v1/directed", response_model=DirectedResponse)
+async def v1_directed(req: DirectedRequest):
+    """Score directed (task, a, b) pairs with cache and reward computation.
+
+    Groups pairs by task into the upstream `needed_pairs` map, calls
+    `score_directed_pairs` via `asyncio.to_thread`, then computes
+    `directed_reward` per pair. Failed backend calls return 502.
+    """
+    model = req.model or MODEL_ALIAS
+
+    # Build tasks dict: task_name -> {candidate_key -> {trace, problem}}
+    # and needed_pairs: task_name -> [(candidate_a, candidate_b), ...]
+    tasks_dict: dict[str, dict] = {}
+    needed_pairs: dict[str, list[tuple[str, str]]] = {}
+    task_problems: dict[str, str] = {t["id"]: t["problem"] for t in req.tasks}
+
+    for p in req.pairs:
+        tid = p.task_id
+        if tid not in tasks_dict:
+            tasks_dict[tid] = {}
+            needed_pairs[tid] = []
+        # Assign candidate names per pair using an incrementing key
+        key_a = f"a_{len(tasks_dict[tid]) // 2}"
+        key_b = f"b_{len(tasks_dict[tid]) // 2}"
+        tasks_dict[tid][key_a] = {
+            "trace": p.a,
+            "problem": task_problems.get(tid, ""),
+        }
+        tasks_dict[tid][key_b] = {
+            "trace": p.b,
+            "problem": task_problems.get(tid, ""),
+        }
+        needed_pairs[tid].append((key_a, key_b))
+
+    cache_file = os.path.join(VERIFIER_CACHE_DIR, "directed_cache.json")
+
+    try:
+        scores = await asyncio.to_thread(
+            score_directed_pairs,
+            lazy_client=_LazyClient(),
+            tasks=tasks_dict,
+            needed_pairs=needed_pairs,
+            criteria=req.criteria,
+            ground_truth_note=req.ground_truth_note,
+            n_reps=req.n_reps,
+            max_workers=1,
+            cache_file=cache_file,
+            model=model,
+            progress=False,
+            on_error="tie",
+        )
+    except Exception as exc:
+        log.error("directed failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    # Compute directed rewards per pair
+    criteria_ids = [c["id"] for c in req.criteria]
+    results = []
+    pair_index = 0
+    for tid in needed_pairs:
+        for key_a, key_b in needed_pairs[tid]:
+            p = req.pairs[pair_index]
+            reward_a, reward_b = directed_reward(
+                scores=scores,
+                task_name=tid,
+                a=key_a,
+                b=key_b,
+                criteria_ids=criteria_ids,
+                n_reps=req.n_reps,
+            )
+            # Extract raw scores: upstream uses cache_key(cid, task_name, a, b, rep)
+            raw_a = scores.get(fgr.cache_key(criteria_ids[0], tid, key_a, key_b, 0), {}).get("score_A", 0.5)
+            raw_b = scores.get(fgr.cache_key(criteria_ids[0], tid, key_a, key_b, 0), {}).get("score_B", 0.5)
+            results.append(DirectedResult(
+                task_id=tid,
+                a=p.a,
+                b=p.b,
+                score_a=raw_a,
+                score_b=raw_b,
+                reward_a=reward_a,
+                reward_b=reward_b,
+            ))
+            pair_index += 1
+
+    log.info(
+        "directed: %d pairs scored model=%s",
+        len(results), model,
+    )
+    return DirectedResponse(results=results, cached=False, model=model)
 
 
 # ── Entrypoint ─────────────────────────────────────────────────────
