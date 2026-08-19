@@ -234,13 +234,13 @@ slot bias. Repeat requests hit the cache without additional backend calls.
 All configuration is done through environment variables (set in `.env` or passed with `-e`):
 
 | Variable | Required | Default | Description |
-|---|---|---|---|---|---|
+|---|---|---|---|
 | `OPENAI_BASE_URL` | **Yes** | — | URL of an OpenAI-compatible backend (e.g. `http://host:port/v1`) |
 | `MODEL_ALIAS` | No | `qwen3.5-9b` | Model name the backend serves |
 | `OPENAI_API_KEY` | No | `EMPTY` | API key; most local servers accept any value |
 | `VERIFIER_PORT` | No | `8010` | HTTP service port |
 | `VERIFIER_MIN_SCORE` | No | `0.8` | Minimum score threshold for `accepted` field |
-| `VERIFIER_BACKEND_TIMEOUT` | No | `300` | Backend request timeout in seconds (increase for long prompts)
+| `VERIFIER_BACKEND_TIMEOUT` | No | `300` | Backend request timeout in seconds (increase for long prompts) |
 | `VERIFIER_CACHE_DIR` | No | `/app/cache` | Directory for directed pair cache (persisted via volume) |
 
 ### Example `.env`
