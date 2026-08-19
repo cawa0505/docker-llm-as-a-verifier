@@ -140,7 +140,8 @@ status, usage = _get("/v1/usage")
 _check("usage status", status == 200, str(usage))
 _check("usage has model", "model" in usage, str(usage))
 _check("usage counts >= 0",
-       usage["prompt_tokens"] >= 0 and usage["completion_tokens"] >= 0,
+       usage["input_tokens"] >= 0 and usage["output_tokens"] >= 0 and
+       usage["cached_input_tokens"] >= 0,
        str(usage))
 _check("usage backend_requests >= 5",
        usage["backend_requests"] >= 5,  # health is NOT counted, 5 verifier calls

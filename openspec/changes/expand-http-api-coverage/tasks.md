@@ -1,7 +1,7 @@
 ## 1. Usage endpoint
 
 - [x] 1.1 Add `GET /v1/usage` handler in `app/server.py` returning structured
-      counts from `fgr.USAGE` (prompt/completion/cached tokens, request
+      counts from `fgr.USAGE` (input/output/cached-input tokens, request
       count, model) plus the `format_usage()` string
 - [x] 1.2 Add `UsageResponse` pydantic schema
 

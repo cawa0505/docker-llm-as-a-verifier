@@ -8,13 +8,13 @@ track and budget LLM cost without inspecting server logs.
 ### Requirement: Usage reporting endpoint
 
 The service SHALL expose `GET /v1/usage` returning the token usage accumulated
-since the service started: prompt tokens, completion tokens, cached tokens,
+since the service started: input tokens, output tokens, cached input tokens,
 and the number of backend requests made.
 
 #### Scenario: Report accumulated usage
 
 WHEN a client requests `GET /v1/usage`
-THEN the response SHALL contain JSON with prompt/completion/cached token
+THEN the response SHALL contain JSON with input/output/cached-input token
 counts, a backend request count, and the model alias in use.
 
 #### Scenario: Counts accumulate across calls

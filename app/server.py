@@ -271,9 +271,9 @@ class ScorePairsResponse(BaseModel):
 class UsageResponse(BaseModel):
     """Token usage accumulated since service start."""
     model: str
-    prompt_tokens: int
-    completion_tokens: int
-    cached_tokens: int
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
     backend_requests: int
     formatted: str
 
@@ -522,9 +522,9 @@ async def v1_usage():
     usage = fgr.token_usage()
     return UsageResponse(
         model=MODEL_ALIAS,
-        prompt_tokens=usage.get("input_tokens", 0),
-        completion_tokens=usage.get("output_tokens", 0),
-        cached_tokens=usage.get("cached_input_tokens", 0),
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        cached_input_tokens=usage.get("cached_input_tokens", 0),
         backend_requests=usage.get("calls", 0),
         formatted="\n".join(fgr.format_usage(usage)),
     )

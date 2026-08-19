@@ -207,9 +207,9 @@ requests are NOT counted.
 →
 {
   "model": "qwen3.5-9b",
-  "prompt_tokens": 1234,
-  "completion_tokens": 567,
-  "cached_tokens": 0,
+  "input_tokens": 1234,
+  "output_tokens": 567,
+  "cached_input_tokens": 0,
   "backend_requests": 8,
   "formatted": "Verifier tokens (8 verifier calls)\n  input ..."
 }
