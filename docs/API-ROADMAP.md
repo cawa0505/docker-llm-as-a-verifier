@@ -8,8 +8,10 @@ Upstream `llm-verifier` 提供的功能與 docker-llm-as-a-verifier HTTP API 的
 |-----------|----------|------|
 | `POST /v1/compare` | `compare()` | ✅ |
 | `POST /v1/select` | `select()` | ✅ |
-| `POST /v1/track` | `track()` | ✅ |
+| `POST /v1/track` | `track()` | ✅（extraction 失敗自動重試，見 README） |
 | `POST /v1/score-pairs` | `score_pair_criterion()` (簡化批次) | ✅ |
+
+全部端點由 `scripts/api_e2e_test.py` 做端到端驗證（含 422/502 錯誤路徑）。
 
 ## 待包裝（依優先順序）
 

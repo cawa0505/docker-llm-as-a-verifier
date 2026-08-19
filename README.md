@@ -146,6 +146,11 @@ The `steps` array contains the agent's actions (one string per step).
 steps when omitted). Each score is the expected value of the A–T letter scale
 mapped to [0, 1].
 
+The model sometimes fails to emit the required `<c{i}>LETTER</c{i}>` answer
+format (reasoning-mode models may return empty content). The service retries
+up to 3 times and returns `502` if no parseable scores are produced — it never
+silently returns the neutral 0.5 fallback.
+
 ### `POST /v1/score-pairs`
 
 Score multiple (A, B) comparisons in one batch. Each pair is scored
