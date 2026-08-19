@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""End-to-end test of the verifier HTTP API against a running service.
+
+Requires the HTTP service to be up (docker compose up -d) and the backend
+to be reachable. Hits every endpoint with the fixed good/bad pair:
+
+    GET  /health
+    POST /v1/compare
+    POST /v1/select
+    POST /v1/track
+    POST /v1/score-pairs
+    POST /v1/compare (validation error path)
+
+Usage:
+    docker compose up -d
+    python3 scripts/api_e2e_test.py        # from the host (pure stdlib)
+
+The test hits the service on the host's mapped port (VERIFIER_BASE_URL,
+default http://localhost:8010), so it runs from the host rather than
+inside a run container.
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+BASE_URL = os.environ.get("VERIFIER_BASE_URL", "http://localhost:8010")
+
+PROBLEM = "Write a function that returns 42."
+GOOD = "def foo(): return 42"
+BAD = "def foo(): return 0"
+
+CRITERIA = [{
+    "id": "correctness",
+    "name": "Correctness",
+    "description": "Does the output correctly solve the task?",
+}]
+
+
+def _post(path, body):
+    req = urllib.request.Request(
+        BASE_URL + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        return resp.status, json.loads(resp.read())
+
+
+def _get(path):
+    with urllib.request.urlopen(BASE_URL + path, timeout=30) as resp:
+        return resp.status, json.loads(resp.read())
+
+
+def _check(name, cond, detail=""):
+    if not cond:
+        print(f"FAIL: {name} {detail}")
+        sys.exit(1)
+    print(f"PASS: {name}")
+
+
+# 1. Health
+status, health = _get("/health")
+_check("health", status == 200 and health["status"] == "ok", str(health))
+
+# 2. Compare: good must beat bad
+status, cmp = _post("/v1/compare", {
+    "problem": PROBLEM,
+    "trace_a": GOOD,
+    "trace_b": BAD,
+    "criteria": CRITERIA,
+    "n_evaluations": 1,
+})
+_check("compare status", status == 200)
+_check("compare scores in [0,1]",
+       0.0 <= cmp["score_a"] <= 1.0 and 0.0 <= cmp["score_b"] <= 1.0,
+       str(cmp))
+_check("compare good > bad", cmp["score_a"] > cmp["score_b"], str(cmp))
+_check("compare accepted is bool", isinstance(cmp["accepted"], bool))
+print(f"  compare: good={cmp['score_a']:.3f} bad={cmp['score_b']:.3f} "
+      f"accepted={cmp['accepted']}")
+
+# 3. Select: must pick the good candidate (index 0)
+status, sel = _post("/v1/select", {
+    "problem": PROBLEM,
+    "candidates": [GOOD, BAD],
+    "criteria": CRITERIA,
+    "n_evaluations": 1,
+    "pivots": 2,
+})
+_check("select status", status == 200)
+_check("select picks good", sel["index"] == 0, str(sel))
+_check("select scores in [0,1]",
+       all(0.0 <= s <= 1.0 for s in sel["scores"]), str(sel))
+print(f"  select: index={sel['index']} scores={[round(s, 3) for s in sel['scores']]}")
+
+# 4. Track: progress should rise toward the correct answer
+steps = ["Read the problem", "Wrote def foo(): return 0", "Fixed to def foo(): return 42"]
+status, trk = _post("/v1/track", {
+    "problem": PROBLEM,
+    "steps": steps,
+    "checkpoint_steps": [1, 2, 3],
+    "n_evaluations": 1,
+})
+_check("track status", status == 200)
+_check("track score count", len(trk["scores"]) == 3, str(trk))
+_check("track scores in [0,1]",
+       all(0.0 <= s <= 1.0 for s in trk["scores"]), str(trk))
+_check("track scores are real (not 0.5 fallback)",
+       any(s is not None for rep in trk["per_rep_scores"] for s in rep),
+       str(trk))
+print(f"  track: scores={[round(s, 3) for s in trk['scores']]}")
+
+# 5. Score pairs: batch comparison
+status, pairs = _post("/v1/score-pairs", {
+    "pairs": [{"problem": PROBLEM, "trace_a": GOOD, "trace_b": BAD}],
+    "criteria": CRITERIA,
+    "n_reps": 1,
+})
+_check("score-pairs status", status == 200)
+_check("score-pairs count", len(pairs["scores"]) == 1, str(pairs))
+sa, sb = pairs["scores"][0]["score_a"], pairs["scores"][0]["score_b"]
+_check("score-pairs in [0,1]", 0.0 <= sa <= 1.0 and 0.0 <= sb <= 1.0, str(pairs))
+_check("score-pairs good > bad", sa > sb, str(pairs))
+print(f"  score-pairs: good={sa:.3f} bad={sb:.3f}")
+
+# 6. Validation error path: missing problem must be rejected (422)
+try:
+    _post("/v1/compare", {"trace_a": GOOD, "trace_b": BAD})
+except urllib.error.HTTPError as exc:
+    _check("validation 422", exc.code == 422, f"got {exc.code}")
+else:
+    _check("validation 422", False, "missing problem was accepted")
+
+print("\nALL E2E CHECKS PASSED")

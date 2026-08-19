@@ -60,6 +60,9 @@ docker compose run --rm verifier python scripts/smoke_test.py
 
 # Core verifier compare()/select() with assertions
 docker compose run --rm verifier python scripts/verifier_smoke_test.py
+
+# End-to-end HTTP API test (service must be up; runs from the host)
+python3 scripts/api_e2e_test.py
 ```
 
 The verifier cache and result volumes are mounted at `/app/cache` and `/app/results`
@@ -74,6 +77,11 @@ for commands that use them.
 | `/v1/select` | POST | Select best from N candidates → index + scores |
 | `/v1/track` | POST | Score an agent trajectory's progress after each step |
 | `/v1/score-pairs` | POST | Batch score multiple (A, B) comparisons |
+
+All endpoints return JSON. Error responses:
+
+- `422` — request validation failed (missing/invalid fields)
+- `502` — backend request failed (unreachable backend, timeout, or verifier error)
 
 ### `POST /v1/compare`
 
@@ -195,6 +203,7 @@ The container installs `llm-verifier` from PyPI and wraps it with:
 - **`app/server.py`** — FastAPI HTTP service with `/health`, `/v1/compare`, `/v1/select`, `/v1/track`, `/v1/score-pairs`
 - **`smoke_test.py`** — standalone script that verifies the backend returns logprobs (no `llm-verifier` package dependency)
 - **`verifier_smoke_test.py`** — checks `compare()` and `select()` with assertions
+- **`api_e2e_test.py`** — end-to-end test of every HTTP endpoint against a running service
 
 The verifier itself connects to your external OpenAI-compatible backend (llama.cpp, vLLM, etc.) — it is **not** served inside this container.
 
@@ -210,7 +219,8 @@ The verifier itself connects to your external OpenAI-compatible backend (llama.c
 └── scripts/
     ├── entrypoint.sh           # Container entrypoint
     ├── smoke_test.py           # Backend connectivity + logprobs test
-    └── verifier_smoke_test.py  # Core verifier behavior test
+    ├── verifier_smoke_test.py  # Core verifier behavior test
+    └── api_e2e_test.py         # End-to-end HTTP API test
 ```
 
 ## License

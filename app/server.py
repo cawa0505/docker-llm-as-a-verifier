@@ -25,7 +25,7 @@ from llm_verifier.fine_grained_reward import score_pair_criterion
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.5-9b")
 VERIFIER_PORT = int(os.environ.get("VERIFIER_PORT", "8010"))
 MIN_SCORE = float(os.environ.get("VERIFIER_MIN_SCORE", "0.8"))
-BACKEND_TIMEOUT = int(os.environ.get("VERIFIER_BACKEND_TIMEOUT", "120"))
+BACKEND_TIMEOUT = int(os.environ.get("VERIFIER_BACKEND_TIMEOUT", "300"))
 
 # ── Monkey-patch call_openai for llama.cpp compatibility ────────────
 # llama.cpp doesn't support vLLM/SGLang-specific extra_body params:
@@ -298,20 +298,35 @@ async def v1_select(req: SelectRequest):
 @app.post("/v1/track", response_model=TrackResponse)
 async def v1_track(req: TrackRequest):
     model = req.model or MODEL_ALIAS
-    try:
-        result = await asyncio.to_thread(
-            track,
-            problem=req.problem,
-            steps=req.steps,
-            checkpoint_steps=req.checkpoint_steps,
-            n_evaluations=req.n_evaluations,
-            max_workers=1,
-            model=model,
-            client=_VERIFIER_CLIENT,
+    result = None
+    for attempt in range(1, 4):
+        try:
+            result = await asyncio.to_thread(
+                track,
+                problem=req.problem,
+                steps=req.steps,
+                checkpoint_steps=req.checkpoint_steps,
+                n_evaluations=req.n_evaluations,
+                max_workers=1,
+                model=model,
+                client=_VERIFIER_CLIENT,
+            )
+        except Exception as exc:
+            log.error("track failed: %s", exc)
+            raise HTTPException(status_code=502, detail=str(exc))
+        # The model sometimes fails to emit the <c{i}>LETTER</c{i}> answer
+        # format (reasoning mode returns empty content). Retry instead of
+        # silently returning the 0.5 fallback.
+        if result.per_rep_scores and all(
+                all(s is None for s in rep) for rep in result.per_rep_scores):
+            log.warning("track extraction failed (attempt %d/3), retrying", attempt)
+            continue
+        break
+    else:
+        raise HTTPException(
+            status_code=502,
+            detail="track: verifier returned no parseable scores after 3 attempts",
         )
-    except Exception as exc:
-        log.error("track failed: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc))
 
     log.info(
         "track: steps=%s scores=%s model=%s",
