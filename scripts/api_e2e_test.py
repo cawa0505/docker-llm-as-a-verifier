@@ -171,7 +171,27 @@ _check("directed raw scores match",
 print(f"  directed: reward_a={r['reward_a']:.3f} reward_b={r['reward_b']:.3f} "
       f"score_a={r['score_a']:.3f} score_b={r['score_b']:.3f}")
 
-# 9. Directed: empty pairs → 422
+# 9. Directed: repeat request hits cache
+status2, directed2 = _post("/v1/directed", {
+    "tasks": [{"id": "task-1", "problem": PROBLEM}],
+    "pairs": [{"task_id": "task-1", "a": GOOD, "b": BAD}],
+    "criteria": CRITERIA,
+    "n_reps": 1,
+})
+_check("directed repeat status", status2 == 200, str(directed2))
+_check("directed cache hit", directed2.get("cached", False),
+       f"cached={directed2.get('cached')}")
+r2 = directed2["results"][0]
+_check("directed repeat reward matches",
+       r2["reward_a"] == r["reward_a"], f"first={r['reward_a']} repeat={r2['reward_a']}")
+# Usage should not increase (cached hit)
+status3, usage3 = _get("/v1/usage")
+_check("directed cache no usage increase",
+       usage3["backend_requests"] == usage2["backend_requests"],
+       f"before={usage2['backend_requests']} after={usage3['backend_requests']}")
+print(f"  directed cached={directed2.get('cached')}")
+
+# 10. Directed: empty pairs → 422
 try:
     _post("/v1/directed", {
         "tasks": [{"id": "t", "problem": PROBLEM}],

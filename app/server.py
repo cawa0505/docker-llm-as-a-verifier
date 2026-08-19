@@ -524,6 +524,9 @@ async def v1_directed(req: DirectedRequest):
 
     cache_file = os.path.join(VERIFIER_CACHE_DIR, "directed_cache.json")
 
+    # Check cache state before calling backend
+    calls_before = fgr.token_usage().get("calls", 0)
+
     try:
         scores = await asyncio.to_thread(
             score_directed_pairs,
@@ -543,6 +546,9 @@ async def v1_directed(req: DirectedRequest):
         log.error("directed failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
 
+    calls_after = fgr.token_usage().get("calls", 0)
+    was_cached = calls_after == calls_before
+
     # Compute directed rewards per pair
     criteria_ids = [c["id"] for c in req.criteria]
     results = []
@@ -558,9 +564,14 @@ async def v1_directed(req: DirectedRequest):
                 criteria_ids=criteria_ids,
                 n_reps=req.n_reps,
             )
-            # Extract raw scores: upstream uses cache_key(cid, task_name, a, b, rep)
-            raw_a = scores.get(fgr.cache_key(criteria_ids[0], tid, key_a, key_b, 0), {}).get("score_A", 0.5)
-            raw_b = scores.get(fgr.cache_key(criteria_ids[0], tid, key_a, key_b, 0), {}).get("score_B", 0.5)
+            # Average raw scores across ALL criteria (not just the first one)
+            all_raw_a, all_raw_b = [], []
+            for cid in criteria_ids:
+                entry = scores.get(fgr.cache_key(cid, tid, key_a, key_b, 0), {})
+                all_raw_a.append(entry.get("score_A", 0.5))
+                all_raw_b.append(entry.get("score_B", 0.5))
+            raw_a = sum(all_raw_a) / len(all_raw_a) if all_raw_a else 0.5
+            raw_b = sum(all_raw_b) / len(all_raw_b) if all_raw_b else 0.5
             results.append(DirectedResult(
                 task_id=tid,
                 a=p.a,
@@ -573,10 +584,10 @@ async def v1_directed(req: DirectedRequest):
             pair_index += 1
 
     log.info(
-        "directed: %d pairs scored model=%s",
-        len(results), model,
+        "directed: %d pairs scored cached=%s model=%s",
+        len(results), was_cached, model,
     )
-    return DirectedResponse(results=results, cached=False, model=model)
+    return DirectedResponse(results=results, cached=was_cached, model=model)
 
 
 # ── Entrypoint ─────────────────────────────────────────────────────
